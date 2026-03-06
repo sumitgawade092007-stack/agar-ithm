@@ -84,7 +84,7 @@
             this.strength = Math.max(0.1, Math.min(MAX_TRAIT, strength));
             this.agility = MAX_TRAIT - this.strength;
             
-            this.speed = 0.15 + (this.agility / 60.0); 
+            this.speed = (this.agility / 55.0); 
             this.radius = 4 + (this.strength / 10.0);
             this.color = color;
             this.framesSinceMeal = 0;
@@ -303,3 +303,4 @@
 </script>
 </body>
 </html>
+
