@@ -3,17 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Natural Selection Simulation</title>
+    <title>Petri Clash Simulation</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { font-family: sans-serif; background-color: #1e1e1e; color: white; display: flex; flex-direction: column; align-items: center; padding: 20px; }
         .container { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; }
         canvas { background-color: #333; border: 2px solid #555; border-radius: 8px; }
-        .controls { margin-bottom: 20px; background: #2a2a2a; padding: 15px; border-radius: 8px; }
+        .controls { margin-bottom: 20px; background: #2a2a2a; padding: 15px; border-radius: 8px; display: flex; gap: 10px; align-items: center;}
         .chart-container { width: 600px; background: #2a2a2a; padding: 15px; border-radius: 8px; text-align: center; }
         input[type="range"] { width: 100%; }
         button { background: #4CAF50; color: white; border: none; padding: 10px 15px; cursor: pointer; border-radius: 4px; }
         button:hover { background: #45a049; }
+        button.stop-btn { background: #f44336; }
+        button.stop-btn:hover { background: #da190b; }
+        button:disabled { background: #555; cursor: not-allowed; }
     </style>
 </head>
 <body>
@@ -22,6 +25,7 @@
         <label for="playerStrength">Player Strength (0-100): </label>
         <input type="number" id="playerStrength" value="50" min="0" max="100">
         <button onclick="startSimulation()">Start / Restart Simulation</button>
+        <button onclick="stopSimulation()" id="stopBtn" class="stop-btn" disabled>Stop Simulation</button>
     </div>
 
     <div class="container">
@@ -40,7 +44,6 @@
     </div>
 
 <script>
-    // Constants
     const WIDTH = 800;
     const HEIGHT = 600;
     const FPS = 60;
@@ -50,7 +53,6 @@
     const SENSING_RADIUS = 150;
     const FOOD_SPAWN_RATE = 5;
 
-    // Simulation State
     let canvas, ctx, animationId;
     let frames = 0, generation = 1;
     let pCells = [], cCells = [], foods = [];
@@ -59,7 +61,6 @@
     let playerStrength = 50;
     let chartInstance = null;
 
-    // Math Utils
     function randomGaussian(mean, std) {
         let u1 = Math.random(), u2 = Math.random();
         let z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
@@ -82,11 +83,13 @@
             super(x, y);
             this.strength = Math.max(0.1, Math.min(MAX_TRAIT, strength));
             this.agility = MAX_TRAIT - this.strength;
-            this.speed = 0.5 + (this.agility / 20.0);
+            
+            this.speed = 0.15 + (this.agility / 60.0); 
             this.radius = 4 + (this.strength / 10.0);
             this.color = color;
             this.framesSinceMeal = 0;
-            this.maxHungerFrames = FPS * (2 + (this.agility / 25.0));
+            
+            this.maxHungerFrames = FPS * (4 + (this.agility / 25.0));
         }
 
         moveTowards(targetX, targetY) {
@@ -150,6 +153,8 @@
         ctx = canvas.getContext('2d');
         
         cancelAnimationFrame(animationId);
+        document.getElementById('stopBtn').disabled = false;
+        
         frames = 0; generation = 1; historyData = []; foods = [];
         compMean = 50.0; compStd = 15.0;
         
@@ -157,6 +162,11 @@
         initChart();
         spawnPopulations(compMean, compStd);
         loop();
+    }
+
+    function stopSimulation() {
+        cancelAnimationFrame(animationId);
+        document.getElementById('stopBtn').disabled = true;
     }
 
     function loop() {
@@ -169,11 +179,9 @@
         pCells.forEach(p => p.update(foods, cCells));
         cCells.forEach(c => c.update(foods, pCells));
 
-        // Starvation
         pCells = pCells.filter(p => p.framesSinceMeal < p.maxHungerFrames);
         cCells = cCells.filter(c => c.framesSinceMeal < c.maxHungerFrames);
 
-        // Eating Food
         [pCells, cCells].forEach(cellList => {
             cellList.forEach(cell => {
                 for (let i = foods.length - 1; i >= 0; i--) {
@@ -185,7 +193,6 @@
             });
         });
 
-        // Combat
         for (let i = pCells.length - 1; i >= 0; i--) {
             for (let j = cCells.length - 1; j >= 0; j--) {
                 let p = pCells[i], c = cCells[j];
@@ -202,7 +209,6 @@
             }
         }
 
-        // Evolution Phase (Time limit or Player extinction)
         if (frames >= SIM_TIME * FPS || pCells.length === 0) {
             historyData.push({
                 gen: generation,
@@ -252,7 +258,6 @@
             `<span style="color:#FF3232">Comp: ${cCells.length} (Avg Str: ${compMean.toFixed(1)})</span>`;
     }
 
-    // --- Chart.js Logic ---
     function initChart() {
         if (chartInstance) chartInstance.destroy();
         const ctxChart = document.getElementById('chartCanvas').getContext('2d');
@@ -287,6 +292,7 @@
         slider.value = historyData.length;
         slider.disabled = false;
         document.getElementById('genLabel').innerText = slider.value;
+        slider.dispatchEvent(new Event('input'));
     }
 
     document.getElementById('genSlider').addEventListener('input', (e) => {
