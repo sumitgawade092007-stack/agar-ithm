@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Natural Selection Simulation</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: sans-serif; background-color: #1e1e1e; color: white; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        .container { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; }
+        canvas { background-color: #333; border: 2px solid #555; border-radius: 8px; }
+        .controls { margin-bottom: 20px; background: #2a2a2a; padding: 15px; border-radius: 8px; }
+        .chart-container { width: 600px; background: #2a2a2a; padding: 15px; border-radius: 8px; text-align: center; }
+        input[type="range"] { width: 100%; }
+        button { background: #4CAF50; color: white; border: none; padding: 10px 15px; cursor: pointer; border-radius: 4px; }
+        button:hover { background: #45a049; }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <label for="playerStrength">Player Strength (0-100): </label>
+        <input type="number" id="playerStrength" value="50" min="0" max="100">
+        <button onclick="startSimulation()">Start / Restart Simulation</button>
+    </div>
+
+    <div class="container">
+        <div>
+            <canvas id="simCanvas" width="800" height="600"></canvas>
+            <div id="stats" style="margin-top: 10px; font-family: monospace;"></div>
+        </div>
+        
+        <div class="chart-container">
+            <canvas id="chartCanvas"></canvas>
+            <div style="margin-top: 15px;">
+                <label for="genSlider">View Generation: <span id="genLabel">1</span></label>
+                <input type="range" id="genSlider" min="1" max="1" value="1" disabled>
+            </div>
+        </div>
+    </div>
+
+<script>
+    // Constants
+    const WIDTH = 800;
+    const HEIGHT = 600;
+    const FPS = 60;
+    const SIM_TIME = 5; 
+    const POP_SIZE = 100;
+    const MAX_TRAIT = 100;
+    const SENSING_RADIUS = 150;
+    const FOOD_SPAWN_RATE = 5;
+
+    // Simulation State
+    let canvas, ctx, animationId;
+    let frames = 0, generation = 1;
+    let pCells = [], cCells = [], foods = [];
+    let historyData = [];
+    let compMean = 50.0, compStd = 15.0;
+    let playerStrength = 50;
+    let chartInstance = null;
+
+    // Math Utils
+    function randomGaussian(mean, std) {
+        let u1 = Math.random(), u2 = Math.random();
+        let z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+        return z0 * std + mean;
+    }
+
+    function calcStats(arr) {
+        if (arr.length === 0) return { mean: 50, std: 15 };
+        let mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+        let variance = arr.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / arr.length;
+        return { mean: mean, std: Math.max(Math.sqrt(variance), 2.0) };
+    }
+
+    class Entity {
+        constructor(x, y) { this.x = x; this.y = y; }
+    }
+
+    class Cell extends Entity {
+        constructor(x, y, strength, color) {
+            super(x, y);
+            this.strength = Math.max(0.1, Math.min(MAX_TRAIT, strength));
+            this.agility = MAX_TRAIT - this.strength;
+            this.speed = 0.5 + (this.agility / 20.0);
+            this.radius = 4 + (this.strength / 10.0);
+            this.color = color;
+            this.framesSinceMeal = 0;
+            this.maxHungerFrames = FPS * (2 + (this.agility / 25.0));
+        }
+
+        moveTowards(targetX, targetY) {
+            let dx = targetX - this.x, dy = targetY - this.y;
+            let dist = Math.hypot(dx, dy);
+            if (dist > 0) {
+                this.x += (dx / dist) * this.speed;
+                this.y += (dy / dist) * this.speed;
+            }
+        }
+
+        update(foods, enemies) {
+            this.framesSinceMeal++;
+            let bestTarget = null;
+            let minDist = Infinity;
+
+            for (let enemy of enemies) {
+                if (this.strength > enemy.strength) {
+                    let dist = Math.hypot(this.x - enemy.x, this.y - enemy.y);
+                    if (dist < SENSING_RADIUS && dist < minDist) {
+                        bestTarget = enemy;
+                        minDist = dist;
+                    }
+                }
+            }
+
+            if (!bestTarget) {
+                for (let f of foods) {
+                    let dist = Math.hypot(this.x - f.x, this.y - f.y);
+                    if (dist < minDist) { bestTarget = f; minDist = dist; }
+                }
+            }
+
+            if (bestTarget) {
+                this.moveTowards(bestTarget.x, bestTarget.y);
+            } else {
+                this.moveTowards(this.x + (Math.random() - 0.5) * 2, this.y + (Math.random() - 0.5) * 2);
+            }
+
+            this.x = Math.max(this.radius, Math.min(WIDTH - this.radius, this.x));
+            this.y = Math.max(this.radius, Math.min(HEIGHT - this.radius, this.y));
+        }
+
+        draw(ctx) {
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+            ctx.fillStyle = this.color;
+            ctx.fill();
+            ctx.closePath();
+        }
+    }
+
+    function spawnPopulations(cMean, cStd) {
+        pCells = Array.from({length: POP_SIZE}, () => new Cell(Math.random() * WIDTH, Math.random() * HEIGHT, playerStrength, '#3296FF'));
+        cCells = Array.from({length: POP_SIZE}, () => new Cell(Math.random() * WIDTH, Math.random() * HEIGHT, randomGaussian(cMean, cStd), '#FF3232'));
+    }
+
+    function startSimulation() {
+        playerStrength = parseFloat(document.getElementById('playerStrength').value);
+        canvas = document.getElementById('simCanvas');
+        ctx = canvas.getContext('2d');
+        
+        cancelAnimationFrame(animationId);
+        frames = 0; generation = 1; historyData = []; foods = [];
+        compMean = 50.0; compStd = 15.0;
+        
+        document.getElementById('genSlider').disabled = true;
+        initChart();
+        spawnPopulations(compMean, compStd);
+        loop();
+    }
+
+    function loop() {
+        frames++;
+
+        if (frames % FOOD_SPAWN_RATE === 0) {
+            foods.push(new Entity(Math.random() * (WIDTH - 20) + 10, Math.random() * (HEIGHT - 20) + 10));
+        }
+
+        pCells.forEach(p => p.update(foods, cCells));
+        cCells.forEach(c => c.update(foods, pCells));
+
+        // Starvation
+        pCells = pCells.filter(p => p.framesSinceMeal < p.maxHungerFrames);
+        cCells = cCells.filter(c => c.framesSinceMeal < c.maxHungerFrames);
+
+        // Eating Food
+        [pCells, cCells].forEach(cellList => {
+            cellList.forEach(cell => {
+                for (let i = foods.length - 1; i >= 0; i--) {
+                    if (Math.hypot(cell.x - foods[i].x, cell.y - foods[i].y) < cell.radius + 3) {
+                        foods.splice(i, 1);
+                        cell.framesSinceMeal = 0;
+                    }
+                }
+            });
+        });
+
+        // Combat
+        for (let i = pCells.length - 1; i >= 0; i--) {
+            for (let j = cCells.length - 1; j >= 0; j--) {
+                let p = pCells[i], c = cCells[j];
+                if (p && c && Math.hypot(p.x - c.x, p.y - c.y) < (p.radius + c.radius)) {
+                    if (p.strength > c.strength) {
+                        cCells.splice(j, 1);
+                        p.framesSinceMeal = 0;
+                    } else if (c.strength > p.strength) {
+                        pCells.splice(i, 1);
+                        c.framesSinceMeal = 0;
+                        break; 
+                    }
+                }
+            }
+        }
+
+        // Evolution Phase (Time limit or Player extinction)
+        if (frames >= SIM_TIME * FPS || pCells.length === 0) {
+            historyData.push({
+                gen: generation,
+                pAlive: pCells.length,
+                cAlive: cCells.length,
+                strengths: cCells.map(c => c.strength)
+            });
+
+            updateSlider();
+            updateChart(generation - 1);
+
+            generation++;
+            frames = 0;
+            foods = [];
+
+            if (cCells.length > 0) {
+                let stats = calcStats(cCells.map(c => c.strength));
+                compMean = stats.mean;
+                compStd = stats.std;
+            } else {
+                compMean += (Math.random() * 10 - 5);
+            }
+
+            spawnPopulations(compMean, compStd);
+        }
+
+        draw();
+        animationId = requestAnimationFrame(loop);
+    }
+
+    function draw() {
+        ctx.fillStyle = '#1e1e1e';
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+        ctx.fillStyle = '#32FF32';
+        foods.forEach(f => {
+            ctx.beginPath(); ctx.arc(f.x, f.y, 3, 0, Math.PI * 2); ctx.fill();
+        });
+
+        cCells.forEach(c => c.draw(ctx));
+        pCells.forEach(p => p.draw(ctx));
+
+        let timeLeft = Math.max(0, SIM_TIME - (frames / FPS)).toFixed(1);
+        document.getElementById('stats').innerHTML = 
+            `Gen: ${generation} | Time: ${timeLeft}s<br>` +
+            `<span style="color:#3296FF">Player: ${pCells.length} (Str: ${playerStrength})</span><br>` +
+            `<span style="color:#FF3232">Comp: ${cCells.length} (Avg Str: ${compMean.toFixed(1)})</span>`;
+    }
+
+    // --- Chart.js Logic ---
+    function initChart() {
+        if (chartInstance) chartInstance.destroy();
+        const ctxChart = document.getElementById('chartCanvas').getContext('2d');
+        chartInstance = new Chart(ctxChart, {
+            type: 'bar',
+            data: {
+                labels: ['0-10','10-20','20-30','30-40','40-50','50-60','60-70','70-80','80-90','90-100'],
+                datasets: [{ label: 'Computer Strength Distribution', data: Array(10).fill(0), backgroundColor: '#FF3232' }]
+            },
+            options: { scales: { y: { beginAtZero: true, max: POP_SIZE } }, responsive: true }
+        });
+    }
+
+    function updateChart(index) {
+        if (!historyData[index]) return;
+        let data = historyData[index];
+        let bins = Array(10).fill(0);
+        
+        data.strengths.forEach(s => {
+            let binIdx = Math.min(9, Math.floor(s / 10));
+            bins[binIdx]++;
+        });
+
+        chartInstance.data.datasets[0].data = bins;
+        chartInstance.data.datasets[0].label = `Gen ${data.gen} | Comp Alive: ${data.cAlive} | Player Alive: ${data.pAlive}`;
+        chartInstance.update();
+    }
+
+    function updateSlider() {
+        let slider = document.getElementById('genSlider');
+        slider.max = historyData.length;
+        slider.value = historyData.length;
+        slider.disabled = false;
+        document.getElementById('genLabel').innerText = slider.value;
+    }
+
+    document.getElementById('genSlider').addEventListener('input', (e) => {
+        document.getElementById('genLabel').innerText = e.target.value;
+        updateChart(e.target.value - 1);
+    });
+
+</script>
+</body>
+</html>
